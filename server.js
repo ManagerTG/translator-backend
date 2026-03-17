@@ -6,22 +6,26 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Middleware
 app.use(cors());
 app.use(express.json());
 app.use(express.static('.'));
 
+// Initialize Gemini (using a stable, fast model)
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({
-  model: 'gemini-2.5-flash',
-  // safetySettings: you can adjust if needed
+  model: 'gemini-2.5-flash',  // or 'gemini-2.0-flash' – both work
 });
 
-// ---------- translation endpoint ----------
+// ----------------------------------------------------------------------
+// TRANSLATION ENDPOINT
+// ----------------------------------------------------------------------
 app.post('/translate', async (req, res) => {
   const { texts } = req.body;
   if (!Array.isArray(texts)) {
     return res.status(400).json({ error: 'texts must be an array' });
   }
+
   try {
     const translations = await Promise.all(texts.map(text => translateText(text)));
     res.json(translations);
@@ -56,7 +60,8 @@ JSON:`;
     const generationConfig = {
       temperature: 0.3,
       maxOutputTokens: 2048,
-      // responseMimeType: "application/json", // uncomment if SDK >= 0.13.0
+      // If you've updated the SDK to >=0.13.0, uncomment the line below to force pure JSON:
+      // responseMimeType: "application/json",
     };
 
     const result = await model.generateContent({
@@ -71,7 +76,7 @@ JSON:`;
     let alternatives = [];
     let tone = 'neutral';
 
-    // Attempt to parse JSON (handling markdown fences)
+    // Attempt to parse JSON (handle markdown fences)
     try {
       const cleaned = responseText.replace(/```json\s*|\s*```/g, '');
       const parsed = JSON.parse(cleaned);
@@ -84,7 +89,7 @@ JSON:`;
       if (mainMatch && mainMatch[1]) {
         translationMain = mainMatch[1].replace(/\\+$/, '').trim();
       } else {
-        // If response looks like plain English, use it
+        // If the whole response looks like plain English, use it directly
         if (/^[A-Za-z0-9\s\.,!?'"-]+$/.test(responseText.trim())) {
           translationMain = responseText.trim();
         }
@@ -100,7 +105,7 @@ JSON:`;
       tone: tone,
     };
   } catch (err) {
-    console.error('Gemini error:', err);
+    console.error('Gemini error in translateText:', err);
     return {
       original: text,
       translation_main: text,
@@ -111,23 +116,27 @@ JSON:`;
   }
 }
 
-// ---------- new endpoint: suggest replies ----------
+// ----------------------------------------------------------------------
+// REPLY SUGGESTION ENDPOINT (with robust parsing & always returns an array)
+// ----------------------------------------------------------------------
 app.post('/suggest-replies', async (req, res) => {
   const { text, category } = req.body;
   if (!text || !category) {
     return res.status(400).json({ error: 'text and category required' });
   }
 
-  const prompt = `You are a helpful assistant that suggests replies in English for someone who received the following Indonesian message: "${text}"
+  // Enhanced prompt: explicitly ask for a JSON array, no extra text
+  const prompt = `You are an expert in crafting engaging, natural replies. Based on the following Indonesian message: "${text}", generate 3-5 replies in English that match the tone and category: "${category}".
 
-The user wants replies that are: ${category}. 
-Generate 3-5 natural, context-aware, and engaging replies in English. They should sound like something a real person would send. Return ONLY a JSON array of strings, e.g. ["reply1", "reply2", "reply3"]. Do not include any other text.`;
+The replies should be creative, context-aware, and sound like something a real person would send. They can range from friendly to flirtatious to intimate, depending on the category.
+
+Return ONLY a JSON array of strings, e.g. ["reply1", "reply2", "reply3"]. Do NOT include any other text, markdown, or explanations.`;
 
   try {
     const generationConfig = {
-      temperature: 0.7, // a bit more creative
-      maxOutputTokens: 800,
-      // responseMimeType: "application/json",
+      temperature: 0.8,            // a bit higher for creative replies
+      maxOutputTokens: 2048,       // increased to avoid truncation
+      // responseMimeType: "application/json", // uncomment if SDK >= 0.13.0
     };
 
     const result = await model.generateContent({
@@ -138,19 +147,77 @@ Generate 3-5 natural, context-aware, and engaging replies in English. They shoul
     const responseText = result.response.text();
     console.log('Raw Gemini response (suggest):', responseText);
 
-    // Extract JSON array
-    const jsonMatch = responseText.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
-      return res.json(['Sorry, no suggestions could be generated.']);
+    let replies = [];
+
+    // ---- Attempt 1: Parse full JSON array (with or without markdown) ----
+    try {
+      const cleaned = responseText.replace(/```json\s*|\s*```/g, '');
+      replies = JSON.parse(cleaned);
+      if (!Array.isArray(replies)) replies = [];
+    } catch (e) {
+      console.log('Full JSON parse failed, attempting to extract partial replies');
+
+      // ---- Attempt 2: Extract all quoted strings (handles truncated arrays) ----
+      const quoteMatches = responseText.match(/"([^"\\]*(\\.[^"\\]*)*)"/g);
+      if (quoteMatches && quoteMatches.length > 0) {
+        replies = quoteMatches.map(m => JSON.parse(m)); // safe because they're valid JSON strings
+      } else {
+        // ---- Attempt 3: Split by lines and take non-empty, non‑bracket lines ----
+        replies = responseText
+          .split('\n')
+          .map(line => line.trim())
+          .filter(line => line && !line.startsWith('[') && !line.startsWith(']') && !line.startsWith(','));
+      }
     }
-    const replies = JSON.parse(jsonMatch[0]);
-    res.json(replies.slice(0, 5)); // ensure max 5
+
+    // Ensure we always return an array (even if empty) to keep frontend happy
+    if (!Array.isArray(replies)) replies = [];
+
+    // Limit to 5 items max, and clean up any leftover escape characters
+    replies = replies.slice(0, 5).map(r => 
+      typeof r === 'string' ? r.replace(/\\"/g, '"').replace(/\\n/g, ' ') : String(r)
+    );
+
+    // If after all attempts we have no replies, provide a fallback based on category
+    if (replies.length === 0) {
+      replies = getFallbackReplies(category);
+    }
+
+    res.json(replies);
   } catch (err) {
     console.error('Reply suggestion error:', err);
-    res.status(500).json({ error: 'Failed to generate replies' });
+    // Even on catastrophic failure, return a fallback so frontend never crashes
+    res.json(getFallbackReplies(category));
   }
 });
 
+// ----------------------------------------------------------------------
+// Fallback replies generator (ensures frontend always has something to show)
+// ----------------------------------------------------------------------
+function getFallbackReplies(category) {
+  const lowerCat = category.toLowerCase();
+  if (lowerCat.includes('friendly')) {
+    return ["That's cool!", "I hear you.", "Sounds good!", "Alright, got it.", "Nice one!"];
+  } else if (lowerCat.includes('playful')) {
+    return ["Haha you're funny 😄", "Oh stop it you 😜", "You're too much!", "😏", "🙈"];
+  } else if (lowerCat.includes('love') || lowerCat.includes('caring')) {
+    return ["I care about you ❤️", "You mean a lot to me.", "Sending you a warm hug.", "Thinking of you.", "You're special."];
+  } else if (lowerCat.includes('supportive')) {
+    return ["I'm here for you.", "You've got this!", "Stay strong 💪", "I believe in you.", "Let me know if you need anything."];
+  } else if (lowerCat.includes('tease')) {
+    return ["Oh really? 😏", "Sure you did 😉", "Tell me another one!", "You're impossible 😆", "😜"];
+  } else if (lowerCat.includes('naughty') || lowerCat.includes('sexy') || lowerCat.includes('erotic') || lowerCat.includes('sexual')) {
+    // Tasteful but safe fallbacks – you can customise further
+    return ["You're tempting me...", "I like where this is going.", "Keep talking like that...", "Mmm 😏", "You're making me blush."];
+  } else {
+    // Generic fallback
+    return ["Interesting...", "Tell me more.", "I see.", "Got it.", "Okay."];
+  }
+}
+
+// ----------------------------------------------------------------------
+// Start the server
+// ----------------------------------------------------------------------
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
