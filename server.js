@@ -11,9 +11,7 @@ app.use(express.json());
 app.use(express.static('.'));
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({
-  model: 'gemini-2.5-flash',
-});
+const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
 app.post('/translate', async (req, res) => {
   const { texts } = req.body;
@@ -53,8 +51,9 @@ JSON:`;
   try {
     const generationConfig = {
       temperature: 0.3,
-      maxOutputTokens: 1024, // Increased to avoid truncation
-      // responseMimeType: "application/json", // Uncomment if SDK >= 0.13.0
+      maxOutputTokens: 2048, // Increased to avoid truncation
+      // 🔥 UNCOMMENT AFTER UPDATING SDK (see instructions below)
+      // responseMimeType: "application/json",
     };
 
     const result = await model.generateContent({
@@ -63,15 +62,14 @@ JSON:`;
     });
 
     const responseText = result.response.text();
-    console.log('Raw Gemini response:', responseText); // Check full output in logs
+    console.log('Raw Gemini response:', responseText);
 
     let translationMain = text;
     let alternatives = [];
     let tone = 'neutral';
 
-    // --- Attempt 1: Extract complete JSON ---
+    // --- Attempt 1: Parse complete JSON ---
     try {
-      // Remove markdown code fences
       const cleaned = responseText.replace(/```json\s*|\s*```/g, '');
       const parsed = JSON.parse(cleaned);
       translationMain = parsed.main || text;
@@ -79,15 +77,18 @@ JSON:`;
       tone = parsed.tone || 'neutral';
       console.log('Successfully parsed JSON');
     } catch (e) {
-      console.log('JSON parse failed, attempting fallback extraction');
+      console.log('JSON parse failed, using fallback extraction');
 
-      // --- Attempt 2: Extract "main" field using regex (works even if JSON is truncated) ---
-      const mainMatch = responseText.match(/"main"\s*:\s*"([^"\\]*(\\.[^"\\]*)*)"/);
+      // --- Attempt 2: Extract main field even if truncated ---
+      // Look for "main": " then capture everything until end of string or until a comma/brace
+      const mainMatch = responseText.match(/"main"\s*:\s*"([^"]*)/);
       if (mainMatch && mainMatch[1]) {
-        translationMain = mainMatch[1].replace(/\\"/g, '"'); // unescape quotes
+        translationMain = mainMatch[1];
+        // Remove trailing backslash or quote if present
+        translationMain = translationMain.replace(/\\+$/, '').trim();
         console.log('Extracted main from partial JSON:', translationMain);
       } else {
-        // --- Attempt 3: If response looks like plain English (no JSON braces), use it directly ---
+        // --- Attempt 3: If response looks like plain English, use it directly
         const looksLikeEnglish = /^[A-Za-z0-9\s\.,!?'"-]+$/.test(responseText.trim());
         if (looksLikeEnglish && responseText.length > 0) {
           translationMain = responseText.trim();
@@ -97,8 +98,8 @@ JSON:`;
         }
       }
 
-      // Try to extract tone if present in partial
-      const toneMatch = responseText.match(/"tone"\s*:\s*"([^"]+)"/);
+      // Try to extract tone if present
+      const toneMatch = responseText.match(/"tone"\s*:\s*"([^"]+)/);
       if (toneMatch) tone = toneMatch[1];
     }
 
