@@ -6,27 +6,21 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
 app.use(cors());
 app.use(express.json());
-app.use(express.static('.')); // serve index.html from root
+app.use(express.static('.'));
 
-// Initialize Gemini with the correct model (gemini-2.5-flash is available)
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({
-  model: 'gemini-2.5-flash', // Updated from 1.5-flash to a currently available model
+  model: 'gemini-2.5-flash',
 });
 
-// Translation endpoint
 app.post('/translate', async (req, res) => {
-  const { texts } = req.body; // array of strings
-
+  const { texts } = req.body;
   if (!Array.isArray(texts)) {
     return res.status(400).json({ error: 'texts must be an array' });
   }
-
   try {
-    // Process each text in parallel
     const translations = await Promise.all(texts.map(text => translateText(text)));
     res.json(translations);
   } catch (error) {
@@ -35,21 +29,11 @@ app.post('/translate', async (req, res) => {
   }
 });
 
-/**
- * Calls Gemini to translate a single text with alternatives and tone.
- */
 async function translateText(text) {
-  // If input is empty, return empty result
   if (!text.trim()) {
-    return {
-      original: text,
-      translation_main: '',
-      alternatives: [],
-      tone: 'neutral'
-    };
+    return { original: text, translation_main: '', alternatives: [], tone: 'neutral' };
   }
 
-  // 🔥 STRONGER PROMPT: insist on pure JSON, no extra text
   const prompt = `You are a professional Indonesian–English translator. Translate the following Indonesian text into natural, conversational English. Handle slang (e.g., "wkwk" → "lol", "iyoo" → "yeah"), fix broken grammar, and adapt to the emotional tone.
 
 If the sentence has more than one possible interpretation, provide 2–3 alternative translations. Also detect the tone: playful, sad, romantic, neutral, or other.
@@ -67,11 +51,10 @@ Text: "${text}"
 JSON:`;
 
   try {
-    // Set generation config – if SDK version >= 0.13.0, you can uncomment responseMimeType
     const generationConfig = {
       temperature: 0.3,
-      maxOutputTokens: 500,
-      // responseMimeType: "application/json", // Uncomment if you update SDK
+      maxOutputTokens: 1024, // Increased to avoid truncation
+      // responseMimeType: "application/json", // Uncomment if SDK >= 0.13.0
     };
 
     const result = await model.generateContent({
@@ -80,43 +63,43 @@ JSON:`;
     });
 
     const responseText = result.response.text();
-    console.log('Raw Gemini response:', responseText); // 👈 CHECK THIS IN RENDER LOGS
+    console.log('Raw Gemini response:', responseText); // Check full output in logs
 
-    let parsed;
-    let translationMain = text; // fallback
+    let translationMain = text;
     let alternatives = [];
     let tone = 'neutral';
 
-    // Try to extract JSON from markdown code block first
-    const jsonMatch = responseText.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
-    if (jsonMatch && jsonMatch[1]) {
-      parsed = JSON.parse(jsonMatch[1]);
-    } else {
-      // Try to find any JSON object
-      const objectMatch = responseText.match(/\{[\s\S]*\}/);
-      if (objectMatch) {
-        try {
-          parsed = JSON.parse(objectMatch[0]);
-        } catch (e) {
-          // Not valid JSON – ignore
-        }
-      }
-    }
-
-    if (parsed) {
+    // --- Attempt 1: Extract complete JSON ---
+    try {
+      // Remove markdown code fences
+      const cleaned = responseText.replace(/```json\s*|\s*```/g, '');
+      const parsed = JSON.parse(cleaned);
       translationMain = parsed.main || text;
       alternatives = Array.isArray(parsed.alternatives) ? parsed.alternatives : [];
       tone = parsed.tone || 'neutral';
-    } else {
-      // 🔥 If no JSON found, assume the whole response is the translation (if it's English-looking)
-      // Simple heuristic: if response contains mostly English words (a-z, spaces, punctuation), use it.
-      const englishLike = /^[A-Za-z0-9\s\.,!?'"-]+$/.test(responseText.trim());
-      if (englishLike && responseText.length > 0) {
-        translationMain = responseText.trim();
-        console.log('Using raw response as translation:', translationMain);
+      console.log('Successfully parsed JSON');
+    } catch (e) {
+      console.log('JSON parse failed, attempting fallback extraction');
+
+      // --- Attempt 2: Extract "main" field using regex (works even if JSON is truncated) ---
+      const mainMatch = responseText.match(/"main"\s*:\s*"([^"\\]*(\\.[^"\\]*)*)"/);
+      if (mainMatch && mainMatch[1]) {
+        translationMain = mainMatch[1].replace(/\\"/g, '"'); // unescape quotes
+        console.log('Extracted main from partial JSON:', translationMain);
       } else {
-        console.warn('Response not JSON and not English-like, falling back to original');
+        // --- Attempt 3: If response looks like plain English (no JSON braces), use it directly ---
+        const looksLikeEnglish = /^[A-Za-z0-9\s\.,!?'"-]+$/.test(responseText.trim());
+        if (looksLikeEnglish && responseText.length > 0) {
+          translationMain = responseText.trim();
+          console.log('Using raw response as translation');
+        } else {
+          console.warn('Could not extract translation, falling back to original');
+        }
       }
+
+      // Try to extract tone if present in partial
+      const toneMatch = responseText.match(/"tone"\s*:\s*"([^"]+)"/);
+      if (toneMatch) tone = toneMatch[1];
     }
 
     return {
@@ -126,17 +109,17 @@ JSON:`;
       tone: tone,
     };
   } catch (err) {
-    console.error('Gemini error for text:', text, err.message, err.stack);
+    console.error('Gemini error:', err);
     return {
       original: text,
       translation_main: text,
       alternatives: [],
       tone: 'neutral',
-      error: 'AI translation failed, showing original',
+      error: 'AI translation failed',
     };
   }
 }
 
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
