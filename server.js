@@ -2,13 +2,47 @@ import express from "express";
 import cors from "cors";
 
 const app = express();
-
 app.use(cors());
 app.use(express.json());
 
-// test route
+// 🔥 SLANG DICTIONARY (VERY IMPORTANT)
+const slangMap = {
+  "kmu": "kamu",
+  "trs": "terus",
+  "ntar": "nanti",
+  "blg": "bilang",
+  "nyaa": "nya",
+  "mkn": "makan",
+  "lh": "",
+  "itu lh": "itu",
+  "bgusss": "bagus",
+  "bgus": "bagus",
+  "bguss": "bagus",
+  "wkwk": "haha",
+};
+
+// 🔥 PREPROCESS TEXT (CLEAN INPUT)
+function cleanText(text) {
+  let words = text.split(" ");
+
+  words = words.map(word => {
+    return slangMap[word.toLowerCase()] || word;
+  });
+
+  return words.join(" ");
+}
+
+// 🔥 POST PROCESS (MAKE NATURAL)
+function improveTranslation(text) {
+  return text
+    .replace("you left me again", "you left me again 😒")
+    .replace("this afternoon", "later this afternoon")
+    .replace("eat", "go eat")
+    .replace("i", "I");
+}
+
 app.get("/", (req, res) => {
-  res.send("Backend working ✅ (FREE MODE)");
+  res.send("Smart Translator Running ✅");
 });
 
 app.post("/translate", async (req, res) => {
@@ -17,15 +51,25 @@ app.post("/translate", async (req, res) => {
 
     const results = await Promise.all(
       texts.map(async (text) => {
+        
+        // 🔥 STEP 1: CLEAN TEXT
+        const cleaned = cleanText(text);
+
+        // 🔥 STEP 2: CALL FREE API
         const response = await fetch(
-          `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=id|en`
+          `https://api.mymemory.translated.net/get?q=${encodeURIComponent(cleaned)}&langpair=id|en`
         );
 
         const data = await response.json();
+        let translated = data.responseData.translatedText;
+
+        // 🔥 STEP 3: IMPROVE OUTPUT
+        translated = improveTranslation(translated);
 
         return {
           original: text,
-          translation: data.responseData.translatedText
+          cleaned,
+          translation: translated
         };
       })
     );
@@ -33,6 +77,7 @@ app.post("/translate", async (req, res) => {
     res.json(results);
 
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: "Translation failed" });
   }
 });
