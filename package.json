@@ -1,15 +1,15 @@
 {
   "name": "ai-translator",
   "version": "1.0.0",
-  "description": "Human-like Indonesian ↔ English translator using Gemini AI",
+  "description": "Indonesian ↔ English translator with reply suggestions (DeepSeek)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.1.3",
     "cors": "^2.8.5",
     "dotenv": "^16.0.3",
-    "express": "^4.18.2"
+    "express": "^4.18.2",
+    "openai": "^4.24.0"
   }
 }
