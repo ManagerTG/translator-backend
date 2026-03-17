@@ -1,20 +1,29 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { OpenAI } = require('openai'); // DeepSeek uses OpenAI SDK
+const { OpenAI } = require('openai');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
 app.use(cors());
 app.use(express.json());
 app.use(express.static('.'));
 
-// DeepSeek client
+// Check for API key at startup
+if (!process.env.DEEPSEEK_API_KEY) {
+    console.error('❌ DEEPSEEK_API_KEY is not set in environment variables!');
+    process.exit(1);
+}
+
 const client = new OpenAI({
     apiKey: process.env.DEEPSEEK_API_KEY,
     baseURL: 'https://api.deepseek.com'
+});
+
+// Simple GET endpoint to test if server is reachable
+app.get('/ping', (req, res) => {
+    res.json({ status: 'ok', message: 'pong' });
 });
 
 // ----------------------------------------------------------------------
@@ -30,7 +39,7 @@ app.post('/translate', async (req, res) => {
         const translations = await Promise.all(texts.map(text => translateText(text)));
         res.json(translations);
     } catch (error) {
-        console.error('Translation error:', error);
+        console.error('Translation endpoint error:', error);
         res.status(500).json({ error: 'Translation service unavailable' });
     }
 });
@@ -57,6 +66,7 @@ Text: "${text}"
 JSON:`;
 
     try {
+        console.log(`Calling DeepSeek for text: "${text}"`);
         const completion = await client.chat.completions.create({
             model: 'deepseek-chat',
             messages: [
@@ -96,7 +106,12 @@ JSON:`;
         };
 
     } catch (err) {
-        console.error('DeepSeek error:', err);
+        console.error('DeepSeek error details:', {
+            message: err.message,
+            status: err.status,
+            response: err.response?.data,
+            stack: err.stack
+        });
         return {
             original: text,
             translation_main: text,
@@ -123,6 +138,7 @@ The replies should be creative, context-aware, and sound like something a real p
 Return ONLY a JSON array of strings, e.g. ["reply1", "reply2", "reply3"]. Do NOT include any other text, markdown, or explanations.`;
 
     try {
+        console.log(`Calling DeepSeek for replies, category: ${category}`);
         const completion = await client.chat.completions.create({
             model: 'deepseek-chat',
             messages: [
@@ -156,7 +172,6 @@ Return ONLY a JSON array of strings, e.g. ["reply1", "reply2", "reply3"]. Do NOT
     }
 });
 
-// Fallback replies
 function getFallbackReplies(category) {
     const lowerCat = category.toLowerCase();
     if (lowerCat.includes('friendly')) {
@@ -177,5 +192,6 @@ function getFallbackReplies(category) {
 }
 
 app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    console.log(`✅ Server running on port ${PORT}`);
+    console.log(`🔍 Test with: curl ${process.env.RENDER_EXTERNAL_URL || 'http://localhost:'+PORT}/ping`);
 });
