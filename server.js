@@ -1,45 +1,53 @@
 import express from "express";
-import fetch from "node-fetch";
+import cors from "cors";
+import OpenAI from "openai";
 
 const app = express();
+app.use(cors());
 app.use(express.json());
 
-app.post("/translate", async (req,res)=>{
-  const {texts, source, target} = req.body;
-
-  const prompt = `
-Translate from ${source} to ${target}.
-
-Rules:
-- Natural meaning (not literal)
-- Detect slang
-- Add short tone
-- Multiple meanings if needed
-
-Texts:
-${texts.map((t,i)=>`${i+1}. ${t}`).join("\n")}
-`;
-
-  const r = await fetch("https://api.openai.com/v1/chat/completions", {
-    method:"POST",
-    headers:{
-      "Authorization":`Bearer ${process.env.OPENAI_API_KEY}`,
-      "Content-Type":"application/json"
-    },
-    body: JSON.stringify({
-      model:"gpt-5.3",
-      messages:[{role:"user",content:prompt}],
-      temperature:0.3
-    })
-  });
-
-  const data = await r.json();
-
-  const output = data.choices[0].message.content
-    .split("\n\n")
-    .map(x=>({translation:x, tone:""}));
-
-  res.json(output);
+const client = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
-app.listen(3000);
+// test route
+app.get("/", (req, res) => {
+  res.send("Backend working ✅");
+});
+
+// main translate route
+app.post("/translate", async (req, res) => {
+  try {
+    const { texts, source, target } = req.body;
+
+    const results = [];
+
+    for (const text of texts) {
+      const prompt = `
+Translate this text smartly.
+
+Text: "${text}"
+
+Give only translation. Keep meaning natural.
+`;
+
+      const response = await client.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: prompt }],
+      });
+
+      results.push({
+        original: text,
+        translation: response.choices[0].message.content.trim()
+      });
+    }
+
+    res.json(results);
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Translation failed" });
+  }
+});
+
+app.listen(3000, () => console.log("Server running"));
