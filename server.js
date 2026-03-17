@@ -49,27 +49,29 @@ async function translateText(text) {
     };
   }
 
-  // Prompt engineered for human-like translation with JSON output
+  // 🔥 STRONGER PROMPT: insist on pure JSON, no extra text
   const prompt = `You are a professional Indonesian–English translator. Translate the following Indonesian text into natural, conversational English. Handle slang (e.g., "wkwk" → "lol", "iyoo" → "yeah"), fix broken grammar, and adapt to the emotional tone.
 
 If the sentence has more than one possible interpretation, provide 2–3 alternative translations. Also detect the tone: playful, sad, romantic, neutral, or other.
 
-Return a valid JSON object with these exact keys:
-- "main": the primary translation (string)
-- "alternatives": array of strings (0–3 items)
-- "tone": string describing the emotional tone
+**IMPORTANT**: Your response must be ONLY a valid JSON object with these exact keys. Do NOT include any explanations, markdown formatting, or extra text before or after the JSON.
+
+{
+  "main": "the primary translation",
+  "alternatives": ["alternative 1", "alternative 2"],
+  "tone": "tone description"
+}
 
 Text: "${text}"
 
 JSON:`;
 
   try {
-    // Set generation config to encourage JSON output
+    // Set generation config – if SDK version >= 0.13.0, you can uncomment responseMimeType
     const generationConfig = {
-      temperature: 0.3,       // lower temperature for consistent output
+      temperature: 0.3,
       maxOutputTokens: 500,
-      // If using SDK version >= 0.13.0, you can force JSON output with:
-      // responseMimeType: "application/json",
+      // responseMimeType: "application/json", // Uncomment if you update SDK
     };
 
     const result = await model.generateContent({
@@ -78,30 +80,53 @@ JSON:`;
     });
 
     const responseText = result.response.text();
-    console.log('Raw Gemini response:', responseText); // helpful for debugging
+    console.log('Raw Gemini response:', responseText); // 👈 CHECK THIS IN RENDER LOGS
 
     let parsed;
+    let translationMain = text; // fallback
+    let alternatives = [];
+    let tone = 'neutral';
 
-    // Try to extract JSON from markdown code block first (e.g., ```json ... ```)
+    // Try to extract JSON from markdown code block first
     const jsonMatch = responseText.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
     if (jsonMatch && jsonMatch[1]) {
       parsed = JSON.parse(jsonMatch[1]);
     } else {
-      // Fallback: find the first outermost JSON object
+      // Try to find any JSON object
       const objectMatch = responseText.match(/\{[\s\S]*\}/);
-      if (!objectMatch) throw new Error('No JSON found in response');
-      parsed = JSON.parse(objectMatch[0]);
+      if (objectMatch) {
+        try {
+          parsed = JSON.parse(objectMatch[0]);
+        } catch (e) {
+          // Not valid JSON – ignore
+        }
+      }
+    }
+
+    if (parsed) {
+      translationMain = parsed.main || text;
+      alternatives = Array.isArray(parsed.alternatives) ? parsed.alternatives : [];
+      tone = parsed.tone || 'neutral';
+    } else {
+      // 🔥 If no JSON found, assume the whole response is the translation (if it's English-looking)
+      // Simple heuristic: if response contains mostly English words (a-z, spaces, punctuation), use it.
+      const englishLike = /^[A-Za-z0-9\s\.,!?'"-]+$/.test(responseText.trim());
+      if (englishLike && responseText.length > 0) {
+        translationMain = responseText.trim();
+        console.log('Using raw response as translation:', translationMain);
+      } else {
+        console.warn('Response not JSON and not English-like, falling back to original');
+      }
     }
 
     return {
       original: text,
-      translation_main: parsed.main || text,
-      alternatives: Array.isArray(parsed.alternatives) ? parsed.alternatives : [],
-      tone: parsed.tone || 'neutral',
+      translation_main: translationMain,
+      alternatives: alternatives,
+      tone: tone,
     };
   } catch (err) {
     console.error('Gemini error for text:', text, err.message, err.stack);
-    // Fallback: return original text with error indicator
     return {
       original: text,
       translation_main: text,
