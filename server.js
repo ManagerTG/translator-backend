@@ -11,8 +11,12 @@ app.use(express.json());
 app.use(express.static('.'));
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+const model = genAI.getGenerativeModel({
+  model: 'gemini-2.5-flash',
+  // safetySettings: you can adjust if needed
+});
 
+// ---------- translation endpoint ----------
 app.post('/translate', async (req, res) => {
   const { texts } = req.body;
   if (!Array.isArray(texts)) {
@@ -51,9 +55,8 @@ JSON:`;
   try {
     const generationConfig = {
       temperature: 0.3,
-      maxOutputTokens: 2048, // Increased to avoid truncation
-      // 🔥 UNCOMMENT AFTER UPDATING SDK (see instructions below)
-      // responseMimeType: "application/json",
+      maxOutputTokens: 2048,
+      // responseMimeType: "application/json", // uncomment if SDK >= 0.13.0
     };
 
     const result = await model.generateContent({
@@ -62,43 +65,30 @@ JSON:`;
     });
 
     const responseText = result.response.text();
-    console.log('Raw Gemini response:', responseText);
+    console.log('Raw Gemini response (translate):', responseText);
 
     let translationMain = text;
     let alternatives = [];
     let tone = 'neutral';
 
-    // --- Attempt 1: Parse complete JSON ---
+    // Attempt to parse JSON (handling markdown fences)
     try {
       const cleaned = responseText.replace(/```json\s*|\s*```/g, '');
       const parsed = JSON.parse(cleaned);
       translationMain = parsed.main || text;
       alternatives = Array.isArray(parsed.alternatives) ? parsed.alternatives : [];
       tone = parsed.tone || 'neutral';
-      console.log('Successfully parsed JSON');
     } catch (e) {
       console.log('JSON parse failed, using fallback extraction');
-
-      // --- Attempt 2: Extract main field even if truncated ---
-      // Look for "main": " then capture everything until end of string or until a comma/brace
       const mainMatch = responseText.match(/"main"\s*:\s*"([^"]*)/);
       if (mainMatch && mainMatch[1]) {
-        translationMain = mainMatch[1];
-        // Remove trailing backslash or quote if present
-        translationMain = translationMain.replace(/\\+$/, '').trim();
-        console.log('Extracted main from partial JSON:', translationMain);
+        translationMain = mainMatch[1].replace(/\\+$/, '').trim();
       } else {
-        // --- Attempt 3: If response looks like plain English, use it directly
-        const looksLikeEnglish = /^[A-Za-z0-9\s\.,!?'"-]+$/.test(responseText.trim());
-        if (looksLikeEnglish && responseText.length > 0) {
+        // If response looks like plain English, use it
+        if (/^[A-Za-z0-9\s\.,!?'"-]+$/.test(responseText.trim())) {
           translationMain = responseText.trim();
-          console.log('Using raw response as translation');
-        } else {
-          console.warn('Could not extract translation, falling back to original');
         }
       }
-
-      // Try to extract tone if present
       const toneMatch = responseText.match(/"tone"\s*:\s*"([^"]+)/);
       if (toneMatch) tone = toneMatch[1];
     }
@@ -120,6 +110,46 @@ JSON:`;
     };
   }
 }
+
+// ---------- new endpoint: suggest replies ----------
+app.post('/suggest-replies', async (req, res) => {
+  const { text, category } = req.body;
+  if (!text || !category) {
+    return res.status(400).json({ error: 'text and category required' });
+  }
+
+  const prompt = `You are a helpful assistant that suggests replies in English for someone who received the following Indonesian message: "${text}"
+
+The user wants replies that are: ${category}. 
+Generate 3-5 natural, context-aware, and engaging replies in English. They should sound like something a real person would send. Return ONLY a JSON array of strings, e.g. ["reply1", "reply2", "reply3"]. Do not include any other text.`;
+
+  try {
+    const generationConfig = {
+      temperature: 0.7, // a bit more creative
+      maxOutputTokens: 800,
+      // responseMimeType: "application/json",
+    };
+
+    const result = await model.generateContent({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig,
+    });
+
+    const responseText = result.response.text();
+    console.log('Raw Gemini response (suggest):', responseText);
+
+    // Extract JSON array
+    const jsonMatch = responseText.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) {
+      return res.json(['Sorry, no suggestions could be generated.']);
+    }
+    const replies = JSON.parse(jsonMatch[0]);
+    res.json(replies.slice(0, 5)); // ensure max 5
+  } catch (err) {
+    console.error('Reply suggestion error:', err);
+    res.status(500).json({ error: 'Failed to generate replies' });
+  }
+});
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
